@@ -44,7 +44,7 @@ public class MainActivity extends Activity {
     static final int MAX_LOGIN_ATTEMPTS = 3;
     static final long RETRY_OFFLINE_MS = 10_000;   // reintento si no hay conexión
     static final long SESSION_CHECK_MS = 30_000;   // revisa si la sesión expiró
-    static final long SUBMIT_COOLDOWN_MS = 5_000;
+    static final long SUBMIT_COOLDOWN_MS = 4_000;
 
     private WebView web;
     private View errorView;
@@ -59,41 +59,34 @@ public class MainActivity extends Activity {
 
     // ---------- JavaScript inyectado ----------
 
-    private static final String DETECT_JS =
-            "(function(){var p=document.querySelector('input[type=password]');" +
-            "return (p && p.offsetParent!==null) ? 'FORM' : 'NOFORM';})()";
+    private String autoLoginFn = null;
 
-    private static String loginJs() {
-        String u = JSONObject.quote(USER);
-        String p = JSONObject.quote(PASS);
-        return "(function(u,p){" +
-            "var pw=document.querySelector('input[type=password]');" +
-            "if(!pw) return 'NOFORM';" +
-            "function txt(o){var s=o==null?'':o;return typeof s==='string'?s:'';}" +
-            "var inputs=[].slice.call(document.querySelectorAll('input')).filter(function(i){" +
-            "  var t=(i.getAttribute('type')||'text').toLowerCase();" +
-            "  return (t==='text'||t==='email'||t==='tel')&&i.offsetParent!==null;});" +
-            "var user=null;" +
-            "for(var i=0;i<inputs.length;i++){var n=(txt(inputs[i].name)+txt(inputs[i].id)+txt(inputs[i].placeholder)).toLowerCase();" +
-            "  if(/user|usuario|account|cuenta|login|name|\\u7528\\u6237/.test(n)){user=inputs[i];break;}}" +
-            "if(!user&&inputs.length) user=inputs[0];" +
-            "function setVal(el,v){el.focus();var d=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');" +
-            "  d.set.call(el,v);el.dispatchEvent(new Event('input',{bubbles:true}));" +
-            "  el.dispatchEvent(new Event('change',{bubbles:true}));el.dispatchEvent(new Event('blur',{bubbles:true}));}" +
-            "if(user) setVal(user,u); setVal(pw,p);" +
-            "setTimeout(function(){" +
-            "  var form=pw.form, btn=null;" +
-            "  var c=[].slice.call(document.querySelectorAll('button,input[type=submit],input[type=button],a,div,span'));" +
-            "  for(var j=0;j<c.length;j++){var e=c[j]; if(e.offsetParent===null) continue;" +
-            "    var t=(txt(e.innerText).length<30?txt(e.innerText):'')+' '+txt(e.value)+' '+txt(e.className)+' '+txt(e.id);" +
-            "    if(/log ?in|sign ?in|iniciar|ingresar|entrar|acceder|\\u767b\\s*\\u5f55/i.test(t)){btn=e;" +
-            "      if(e.tagName==='BUTTON'||e.tagName==='INPUT') break;}}" +
-            "  if(!btn&&form) btn=form.querySelector('[type=submit]');" +
-            "  if(btn) btn.click(); else if(form) form.submit();" +
-            "  else pw.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',keyCode:13,which:13,bubbles:true}));" +
-            "},400);" +
-            "return 'SUBMITTED';" +
-            "})(" + u + "," + p + ")";
+    private String autoLoginFn() {
+        if (autoLoginFn == null) {
+            try {
+                java.io.InputStream in = getAssets().open("autologin.js");
+                java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+                byte[] buf = new byte[4096];
+                int n;
+                while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                in.close();
+                autoLoginFn = out.toString("UTF-8");
+            } catch (java.io.IOException e) {
+                autoLoginFn = "function(){return 'NOFORM';}";
+            }
+        }
+        return autoLoginFn;
+    }
+
+    /** mode: "'detect'" o 1/2/3 (estrategia de envío según el intento). */
+    private String loginScript(String mode, boolean onlyVisible) {
+        return "(" + autoLoginFn() + ")(" + JSONObject.quote(USER) + "," + JSONObject.quote(PASS)
+                + "," + mode + "," + onlyVisible + ")";
+    }
+
+    private boolean onTarget() {
+        String url = web.getUrl();
+        return url != null && url.contains(TARGET_KEY);
     }
 
     // ---------- Ciclo de vida ----------
@@ -172,13 +165,13 @@ public class MainActivity extends Activity {
     // ---------- Login automático ----------
 
     private void scheduleLoginChecks() {
-        handler.postDelayed(checkLoginTask, 800);
-        handler.postDelayed(checkLoginTask, 2500);
+        long[] delays = {700, 2000, 4000, 7000};
+        for (long d : delays) handler.postDelayed(checkLoginTask, d);
     }
 
     private void checkLogin() {
         if (mainFrameError) return;
-        web.evaluateJavascript(DETECT_JS, new ValueCallback<String>() { @Override public void onReceiveValue(String r) {
+        web.evaluateJavascript(loginScript("'detect'", onTarget()), new ValueCallback<String>() { @Override public void onReceiveValue(String r) {
             boolean form = r != null && r.contains("FORM") && !r.contains("NOFORM");
             String url = web.getUrl() == null ? "" : web.getUrl();
             if (form) {
@@ -213,7 +206,7 @@ public class MainActivity extends Activity {
         lastSubmit = now;
         loginAttempts++;
         pendingRedirect = true;
-        web.evaluateJavascript(loginJs(), new ValueCallback<String>() {
+        web.evaluateJavascript(loginScript(String.valueOf(loginAttempts), onTarget()), new ValueCallback<String>() {
             @Override public void onReceiveValue(String r) { handler.postDelayed(checkLoginTask, 4000); }
         });
     }
