@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Permite HTTP (sin S) hacia el servidor RCMS de la red interna -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>
