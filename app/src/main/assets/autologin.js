@@ -155,6 +155,6 @@ function (u, p, mode, onlyVisible) {
       if (form) { if (form.requestSubmit) form.requestSubmit(); else form.submit(); }
       else if (btn) btn.click();
     }
-  }, 150);
+  }, 500);
   return 'SUBMITTED';
 }

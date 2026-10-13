@@ -37,11 +37,11 @@ import java.io.InputStream;
 /**
  * Panel Operario RCMS.
  *
- * - El panel se muestra en pantalla completa en el navegador principal.
+ * - Muestra el panel en pantalla completa y en modo escritorio.
  * - Un vigilante dentro de la página avisa al instante si aparece
  *   "User account or authorization expired" o el formulario de login.
- * - El inicio de sesión se hace en un navegador OCULTO (detrás del panel),
- *   que comparte las cookies; al terminar se recarga el panel.
+ * - Entonces tapa la pantalla con "Conectando…", inicia sesión por detrás
+ *   de esa cortina y vuelve al Panel Operario.
  */
 public class MainActivity extends Activity {
 
@@ -51,33 +51,37 @@ public class MainActivity extends Activity {
     static final String LOGIN_URL  = "http://10.20.1.4:8181/";
     static final String USER = "admin";
     static final String PASS = "12Hik34++";
+    static final int DESKTOP_WIDTH = 1366;      // ancho de "pantalla de computador" en píxeles CSS
+    static final String DESKTOP_UA =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+            + "Chrome/129.0.0.0 Safari/537.36";
     // ===========================================================
 
-    static final long RECONNECT_TIMEOUT_MS = 20_000;  // máximo por intento de login
-    static final int  MAX_RECONNECT_TRIES  = 3;       // intentos seguidos antes de pedir login manual
-    static final long RETRY_OFFLINE_MS     = 8_000;
+    static final long LOGIN_TIMEOUT_MS = 25_000;
+    static final int  MAX_LOGIN_TRIES  = 3;
+    static final long RETRY_OFFLINE_MS = 8_000;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
 
-    private WebView web;        // panel visible
-    private WebView bg;         // navegador oculto para iniciar sesión
-    private View overlay;       // "Reconectando…"
+    private WebView web;
+    private View overlay;
+    private TextView overlayText;
     private View errorView;
     private TextView errorText;
 
     private String autoLoginFn;
     private boolean mainFrameError = false;
 
-    // Estado de la reconexión
-    private boolean reconnecting = false;
-    private int reconnectTries = 0;
-    private int bgSubmits = 0;
-    private long bgLastSubmit = 0;
-    private long bgPageAt = 0;
-    private int noFormStreak = 0;
-    private long lastReconnectOk = 0;
-    private int quickRepeats = 0;
+    // Estado del inicio de sesión
+    private boolean loggingIn = false;
     private boolean manualMode = false;
+    private int loginTries = 0;
+    private int submits = 0;
+    private long lastSubmit = 0;
+    private long pageLoadedAt = 0;
+    private int noFormStreak = 0;
+    private long lastLoginOk = 0;
+    private int quickRepeats = 0;
 
     // ---------------------------------------------------------------- ciclo de vida
 
@@ -89,7 +93,6 @@ public class MainActivity extends Activity {
         w.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
                 | WindowManager.LayoutParams.FLAG_FULLSCREEN);
         if (Build.VERSION.SDK_INT >= 28) {
-            // Usar también la zona de la cámara/notch: sin franja negra arriba
             WindowManager.LayoutParams lp = w.getAttributes();
             lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
             w.setAttributes(lp);
@@ -100,14 +103,20 @@ public class MainActivity extends Activity {
         FrameLayout.LayoutParams full = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
 
-        // El oculto va PRIMERO (queda detrás del panel, pero con tamaño real para que la página funcione)
-        bg = new WebView(this);
-        configure(bg);
-        bg.setWebViewClient(new BgClient());
-        root.addView(bg, full);
-
         web = new WebView(this);
-        configure(web);
+        WebSettings s = web.getSettings();
+        s.setJavaScriptEnabled(true);
+        s.setDomStorageEnabled(true);
+        s.setDatabaseEnabled(true);
+        s.setUserAgentString(DESKTOP_UA);       // la página cree que es un computador
+        s.setUseWideViewPort(true);
+        s.setLoadWithOverviewMode(true);        // ajusta el ancho de escritorio a la pantalla
+        s.setSupportZoom(true);
+        s.setBuiltInZoomControls(true);
+        s.setDisplayZoomControls(false);
+        s.setMediaPlaybackRequiresUserGesture(false);
+        if (Build.VERSION.SDK_INT >= 21) s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+        web.setBackgroundColor(Color.parseColor("#3D4049"));
         web.addJavascriptInterface(new Bridge(), "PanelApp");
         web.setWebViewClient(new MainClient());
         root.addView(web, full);
@@ -119,33 +128,15 @@ public class MainActivity extends Activity {
 
         CookieManager cm = CookieManager.getInstance();
         cm.setAcceptCookie(true);
-        if (Build.VERSION.SDK_INT >= 21) {
-            cm.setAcceptThirdPartyCookies(web, true);
-            cm.setAcceptThirdPartyCookies(bg, true);
-        }
+        if (Build.VERSION.SDK_INT >= 21) cm.setAcceptThirdPartyCookies(web, true);
 
+        web.requestFocus();
         web.loadUrl(TARGET_URL);
-    }
-
-    @SuppressLint("SetJavaScriptEnabled")
-    private void configure(WebView v) {
-        WebSettings s = v.getSettings();
-        s.setJavaScriptEnabled(true);
-        s.setDomStorageEnabled(true);
-        s.setDatabaseEnabled(true);
-        s.setLoadWithOverviewMode(true);
-        s.setUseWideViewPort(true);
-        s.setBuiltInZoomControls(true);
-        s.setDisplayZoomControls(false);
-        s.setMediaPlaybackRequiresUserGesture(false);
-        if (Build.VERSION.SDK_INT >= 21) s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
-        v.setBackgroundColor(Color.parseColor("#3D4049"));
     }
 
     @Override protected void onResume() {
         super.onResume();
         web.onResume();
-        bg.onResume();
         hideSystemBars();
         if (errorView.getVisibility() == View.VISIBLE) web.loadUrl(TARGET_URL);
     }
@@ -153,14 +144,12 @@ public class MainActivity extends Activity {
     @Override protected void onPause() {
         super.onPause();
         web.onPause();
-        bg.onPause();
         if (Build.VERSION.SDK_INT >= 21) CookieManager.getInstance().flush();
     }
 
     @Override protected void onDestroy() {
         handler.removeCallbacksAndMessages(null);
         web.destroy();
-        bg.destroy();
         super.onDestroy();
     }
 
@@ -173,14 +162,14 @@ public class MainActivity extends Activity {
         if (hasFocus) hideSystemBars();
     }
 
-    // ---------------------------------------------------------------- vigilante en el panel
+    // ---------------------------------------------------------------- modo escritorio + vigilante
 
-    /** La página llama aquí apenas detecta sesión vencida o formulario de login. */
-    private class Bridge {
-        @JavascriptInterface public void sessionLost(final String why) {
-            handler.post(() -> startReconnect());
-        }
-    }
+    /** Fuerza ancho de computador aunque la página pida "ancho del celular". */
+    private static final String DESKTOP_JS =
+        "(function(){try{var c='width=" + DESKTOP_WIDTH + "';" +
+        "var m=document.querySelector('meta[name=viewport]');" +
+        "if(!m){m=document.createElement('meta');m.name='viewport';(document.head||document.documentElement).appendChild(m);}" +
+        "if(m.content!==c)m.content=c;}catch(e){}})()";
 
     private static final String WATCHER_JS =
         "(function(){if(window.__panelWatch)return;window.__panelWatch=1;" +
@@ -189,137 +178,161 @@ public class MainActivity extends Activity {
         "function chk(){try{var b=document.body;if(!b)return;" +
         " var pw=document.querySelector('input[type=password]');" +
         " var lost=(pw&&pw.offsetParent!==null)||EXP.test((b.innerText||'').replace(/\\s+/g,' '));" +
-        " if(lost){var n=Date.now();if(n-sent>3000){sent=n;PanelApp.sessionLost('x');}}" +
+        " if(lost){var n=Date.now();if(n-sent>3000){sent=n;PanelApp.sessionLost();}}" +
         "}catch(e){}}" +
         "var t=null;" +
         "try{new MutationObserver(function(){if(t)return;t=setTimeout(function(){t=null;chk();},250);})" +
         ".observe(document.documentElement,{childList:true,subtree:true,characterData:true});}catch(e){}" +
         "setInterval(chk,2000);chk();})()";
 
-    private void injectWatcher() {
+    private void prepPage() {
+        web.evaluateJavascript(DESKTOP_JS, null);
         web.evaluateJavascript(WATCHER_JS, null);
     }
 
-    // ---------------------------------------------------------------- reconexión en segundo plano
+    private class Bridge {
+        @JavascriptInterface public void sessionLost() {
+            handler.post(() -> startLogin());
+        }
+    }
 
-    private void startReconnect() {
-        if (reconnecting || manualMode) return;
+    // ---------------------------------------------------------------- inicio de sesión tras la cortina
+
+    private void startLogin() {
+        if (loggingIn || manualMode) return;
         long now = System.currentTimeMillis();
-
-        // Si la sesión "vence" justo después de reconectar varias veces, algo más falla: login manual
-        if (now - lastReconnectOk < 15_000) quickRepeats++; else quickRepeats = 0;
+        if (now - lastLoginOk < 15_000) quickRepeats++; else quickRepeats = 0;
         if (quickRepeats >= 3) { goManual("El RCMS rechaza la sesión. Inicie sesión manualmente."); return; }
 
-        reconnecting = true;
-        reconnectTries = 0;
-        overlay.setVisibility(View.VISIBLE);
-        beginBgLogin();
+        loggingIn = true;
+        loginTries = 0;
+        showOverlay("Conectando…");
+        nextTry();
     }
 
-    private void beginBgLogin() {
-        reconnectTries++;
-        bgSubmits = 0;
-        bgLastSubmit = 0;
-        bgPageAt = 0;
+    private void nextTry() {
+        loginTries++;
+        submits = 0;
+        lastSubmit = 0;
         noFormStreak = 0;
-        handler.removeCallbacks(bgTimeout);
-        handler.postDelayed(bgTimeout, RECONNECT_TIMEOUT_MS);
-        handler.removeCallbacks(bgStep);
-        bg.loadUrl(LOGIN_URL);
+        pageLoadedAt = 0;
+        handler.removeCallbacks(step);
+        handler.removeCallbacks(loginTimeout);
+        handler.postDelayed(loginTimeout, LOGIN_TIMEOUT_MS);
+        web.requestFocus();
+        web.loadUrl(LOGIN_URL);
     }
 
-    private final Runnable bgTimeout = () -> {
-        if (!reconnecting) return;
-        if (reconnectTries < MAX_RECONNECT_TRIES) beginBgLogin();
+    private final Runnable loginTimeout = () -> {
+        if (!loggingIn) return;
+        if (loginTries < MAX_LOGIN_TRIES) nextTry();
         else goManual("No se pudo iniciar sesión automáticamente.");
     };
 
-    /** Revisa la página oculta cada 300 ms: llena y envía el login, y detecta cuándo entró. */
-    private final Runnable bgStep = new Runnable() {
+    /** Cada 300 ms: si hay formulario lo llena y envía; cuando desaparece, la sesión quedó iniciada. */
+    private final Runnable step = new Runnable() {
         @Override public void run() {
-            if (!reconnecting) return;
-            bg.evaluateJavascript(loginScript(bg, "'detect'"), r -> {
-                if (!reconnecting) return;
+            if (!loggingIn) return;
+            web.evaluateJavascript(loginScript("'detect'"), r -> {
+                if (!loggingIn) return;
                 long now = System.currentTimeMillis();
                 boolean form = r != null && r.contains("FORM") && !r.contains("NOFORM");
                 boolean expired = r != null && r.contains("EXPIRED");
 
                 if (form || expired) noFormStreak = 0;
                 if (form) {
-                    if (bgSubmits >= 3 && now - bgLastSubmit > 4000) {
-                        bgTimeout.run();       // la clave no la acepta: siguiente intento / manual
-                        return;
-                    }
-                    if (bgLastSubmit == 0 || now - bgLastSubmit > 2500) {
-                        bgSubmits++;
-                        bgLastSubmit = now;
-                        bg.evaluateJavascript(loginScript(bg, String.valueOf(bgSubmits)), null);
+                    if (submits >= 3 && now - lastSubmit > 4000) { loginTimeout.run(); return; }
+                    if (lastSubmit == 0 || now - lastSubmit > 3500) {
+                        submits++;
+                        lastSubmit = now;
+                        web.requestFocus();
+                        web.evaluateJavascript(loginScript(String.valueOf(submits)), null);
                     }
                 } else if (expired) {
-                    bg.evaluateJavascript(loginScript(bg, "'ok'"), null);
-                } else if (bgSubmits > 0 && now - bgLastSubmit > 400 && bg.getProgress() == 100
-                        && ++noFormStreak >= 2) {
-                    reconnectDone();       // el formulario desapareció tras enviar y la página cargó: sesión iniciada
-                    return;
-                } else if (bgSubmits == 0 && bgPageAt > 0 && now - bgPageAt > 3000) {
-                    reconnectDone();       // no pidió login: la sesión ya era válida
-                    return;
+                    web.evaluateJavascript(loginScript("'ok'"), null);
+                } else if (web.getProgress() == 100 && ++noFormStreak >= 3) {
+                    if (submits > 0 || (pageLoadedAt > 0 && now - pageLoadedAt > 3000)) {
+                        loginOk();
+                        return;
+                    }
                 }
-                handler.postDelayed(bgStep, 300);
+                handler.postDelayed(step, 300);
             });
         }
     };
 
-    private void reconnectDone() {
-        reconnecting = false;
-        manualMode = false;
-        lastReconnectOk = System.currentTimeMillis();
-        handler.removeCallbacks(bgTimeout);
-        handler.removeCallbacks(bgStep);
+    private void loginOk() {
+        loggingIn = false;
+        lastLoginOk = System.currentTimeMillis();
+        handler.removeCallbacks(loginTimeout);
+        handler.removeCallbacks(step);
         if (Build.VERSION.SDK_INT >= 21) CookieManager.getInstance().flush();
-        bg.loadUrl("about:blank");
-        web.loadUrl(TARGET_URL);       // el overlay se quita cuando el panel termina de cargar
+        showOverlay("Abriendo panel…");
+        web.loadUrl(TARGET_URL);           // la cortina se quita cuando el panel carga
     }
 
     private void goManual(String msg) {
-        reconnecting = false;
+        loggingIn = false;
         manualMode = true;
-        handler.removeCallbacks(bgTimeout);
-        handler.removeCallbacks(bgStep);
-        bg.loadUrl("about:blank");
+        handler.removeCallbacks(loginTimeout);
+        handler.removeCallbacks(step);
         overlay.setVisibility(View.GONE);
         Toast.makeText(this, msg, Toast.LENGTH_LONG).show();
         web.loadUrl(LOGIN_URL);
     }
 
-    // ---------------------------------------------------------------- clientes web
+    private final Runnable manualCheck = new Runnable() {
+        @Override public void run() {
+            if (!manualMode) return;
+            web.evaluateJavascript(loginScript("'detect'"), r -> {
+                String url = web.getUrl() == null ? "" : web.getUrl();
+                boolean form = r != null && r.contains("FORM") && !r.contains("NOFORM");
+                if (!form && web.getProgress() == 100) {
+                    manualMode = false;
+                    quickRepeats = 0;
+                    lastLoginOk = System.currentTimeMillis();
+                    if (!url.contains(TARGET_KEY)) web.loadUrl(TARGET_URL);
+                } else {
+                    handler.postDelayed(this, 1500);
+                }
+            });
+        }
+    };
+
+    // ---------------------------------------------------------------- cliente web
 
     private class MainClient extends WebViewClient {
         @Override public void onPageStarted(WebView v, String url, Bitmap favicon) {
             mainFrameError = false;
         }
 
+        @Override public void onPageCommitVisible(WebView v, String url) {
+            v.evaluateJavascript(DESKTOP_JS, null);   // antes de que se vea, para que no "salte"
+        }
+
         @Override public void onPageFinished(WebView v, String url) {
             if (mainFrameError) { showError(); return; }
             errorView.setVisibility(View.GONE);
-            if (url != null && url.contains(TARGET_KEY)) {
-                manualMode = false;
-                injectWatcher();
-                if (!reconnecting) handler.postDelayed(() -> {
-                    if (!reconnecting) overlay.setVisibility(View.GONE);
-                }, 600);
+            prepPage();
+
+            if (loggingIn) {
+                if (pageLoadedAt == 0) pageLoadedAt = System.currentTimeMillis();
+                handler.removeCallbacks(step);
+                handler.postDelayed(step, 400);
             } else if (manualMode) {
-                // Login manual: cuando entre, volver al panel
+                handler.removeCallbacks(manualCheck);
                 handler.postDelayed(manualCheck, 1500);
-            } else if (!reconnecting) {
-                // Cayó en otra página (p.ej. el login): reconectar por detrás
-                injectWatcher();
-                startReconnect();
+            } else if (url != null && url.contains(TARGET_KEY)) {
+                handler.postDelayed(() -> {
+                    if (!loggingIn) overlay.setVisibility(View.GONE);
+                }, 700);
+            } else if (url != null && !url.startsWith("about:")) {
+                startLogin();      // cayó en el login u otra página
             }
         }
 
         @Override public void doUpdateVisitedHistory(WebView v, String url, boolean isReload) {
-            if (url != null && url.contains(TARGET_KEY)) injectWatcher();
+            prepPage();
         }
 
         @Override public void onReceivedHttpAuthRequest(WebView v, HttpAuthHandler h, String host, String realm) {
@@ -344,38 +357,6 @@ public class MainActivity extends Activity {
         @Override public boolean shouldOverrideUrlLoading(WebView v, String url) { return false; }
     }
 
-    private final Runnable manualCheck = new Runnable() {
-        @Override public void run() {
-            if (!manualMode) return;
-            web.evaluateJavascript(loginScript(web, "'detect'"), r -> {
-                String url = web.getUrl() == null ? "" : web.getUrl();
-                boolean form = r != null && r.contains("FORM") && !r.contains("NOFORM");
-                if (!form && !url.startsWith("about:")) {
-                    manualMode = false;
-                    quickRepeats = 0;
-                    if (!url.contains(TARGET_KEY)) web.loadUrl(TARGET_URL);
-                } else {
-                    handler.postDelayed(this, 1500);
-                }
-            });
-        }
-    };
-
-    private class BgClient extends WebViewClient {
-        @Override public void onPageFinished(WebView v, String url) {
-            if (!reconnecting || url == null || url.startsWith("about:")) return;
-            if (bgPageAt == 0) bgPageAt = System.currentTimeMillis();
-            handler.removeCallbacks(bgStep);
-            handler.postDelayed(bgStep, 200);
-        }
-
-        @Override public void onReceivedHttpAuthRequest(WebView v, HttpAuthHandler h, String host, String realm) {
-            h.proceed(USER, PASS);
-        }
-
-        @Override public boolean shouldOverrideUrlLoading(WebView v, String url) { return false; }
-    }
-
     // ---------------------------------------------------------------- script de login
 
     private String autoLoginFn() {
@@ -393,32 +374,44 @@ public class MainActivity extends Activity {
         return autoLoginFn;
     }
 
-    private String loginScript(WebView v, String mode) {
+    private String loginScript(String mode) {
         return "(" + autoLoginFn() + ")(" + JSONObject.quote(USER) + "," + JSONObject.quote(PASS)
-                + "," + mode + "," + (v == web) + ")";
+                + "," + mode + ",true)";
     }
 
     // ---------------------------------------------------------------- vistas auxiliares
+
+    private void showOverlay(String text) {
+        overlayText.setText(text);
+        overlay.setVisibility(View.VISIBLE);
+    }
 
     private View buildOverlay() {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setGravity(Gravity.CENTER);
-        box.setBackgroundColor(Color.parseColor("#E61B1F24"));
-        box.setClickable(true);                 // tapa el aviso de "expired"
+        box.setBackgroundColor(Color.parseColor("#1B1F24"));   // opaca: no se ve el login
+        box.setClickable(true);
 
-        ProgressBar pb = new ProgressBar(this);
-        box.addView(pb);
+        box.addView(new ProgressBar(this));
 
-        TextView t = new TextView(this);
-        t.setText("Reconectando…");
-        t.setTextColor(Color.WHITE);
-        t.setTextSize(18);
-        t.setGravity(Gravity.CENTER);
-        t.setPadding(0, dp(16), 0, 0);
-        box.addView(t);
+        overlayText = new TextView(this);
+        overlayText.setTextColor(Color.WHITE);
+        overlayText.setTextSize(18);
+        overlayText.setGravity(Gravity.CENTER);
+        overlayText.setPadding(0, dp(16), 0, 0);
+        box.addView(overlayText);
 
-        box.setVisibility(View.GONE);
+        TextView brand = new TextView(this);
+        brand.setText("Panel Operario · RCMS");
+        brand.setTextColor(Color.parseColor("#8A93A0"));
+        brand.setTextSize(13);
+        brand.setGravity(Gravity.CENTER);
+        brand.setPadding(0, dp(8), 0, 0);
+        box.addView(brand);
+
+        overlayText.setText("Conectando…");
+        box.setVisibility(View.VISIBLE);          // visible desde el arranque hasta que cargue el panel
         overlay = box;
         return box;
     }
