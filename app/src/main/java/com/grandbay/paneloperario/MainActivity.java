@@ -37,6 +37,7 @@ public class MainActivity extends Activity {
     // ======== CONFIGURACIÓN (edite aquí si cambia algo) ========
     static final String TARGET_URL = "http://10.20.1.4:8181/rcms/web/cms/PanelOperario/";
     static final String TARGET_KEY = "PanelOperario"; // texto que identifica la página destino
+    static final String LOGIN_URL = "http://10.20.1.4:8181/";   // abre la pantalla de login del RCMS
     static final String USER = "admin";
     static final String PASS = "12Hik34++";
     // ===========================================================
@@ -56,6 +57,8 @@ public class MainActivity extends Activity {
     private long lastSubmit = 0;
     private boolean pendingRedirect = false;
     private boolean mainFrameError = false;
+    private int expiredCount = 0;
+    private long loginNavAt = 0;
 
     // ---------- JavaScript inyectado ----------
 
@@ -173,10 +176,15 @@ public class MainActivity extends Activity {
         if (mainFrameError) return;
         web.evaluateJavascript(loginScript("'detect'", onTarget()), new ValueCallback<String>() { @Override public void onReceiveValue(String r) {
             boolean form = r != null && r.contains("FORM") && !r.contains("NOFORM");
+            boolean expired = r != null && r.contains("EXPIRED");
             String url = web.getUrl() == null ? "" : web.getUrl();
+            long now = System.currentTimeMillis();
             if (form) {
                 tryAutoLogin();
-            } else if (pendingRedirect && !url.contains(TARGET_KEY)) {
+            } else if (expired) {
+                handleExpired();
+            } else if (pendingRedirect && !url.contains(TARGET_KEY)
+                    && (lastSubmit > loginNavAt || now - loginNavAt > 15_000)) {
                 // Sesión iniciada pero quedó en otra página: volver al Panel Operario
                 pendingRedirect = false;
                 web.loadUrl(TARGET_URL);
@@ -184,8 +192,36 @@ public class MainActivity extends Activity {
                 pendingRedirect = false;
                 loginAttempts = 0;
                 basicAuthAttempts = 0;
+                expiredCount = 0;
             }
         }});
+    }
+
+    /** El panel mostró "sesión vencida": pulsar OK y, si no lleva al login, abrir el login directamente. */
+    private void handleExpired() {
+        long now = System.currentTimeMillis();
+        if (now - loginNavAt < 8_000) return;          // ya se está atendiendo
+        if (expiredCount >= MAX_LOGIN_ATTEMPTS) {
+            if (expiredCount == MAX_LOGIN_ATTEMPTS) {
+                expiredCount++;
+                Toast.makeText(this, "El RCMS sigue diciendo que la sesión venció. Revise usuario y licencia.",
+                        Toast.LENGTH_LONG).show();
+            }
+            return;
+        }
+        expiredCount++;
+        pendingRedirect = true;
+        loginAttempts = 0;
+        loginNavAt = now;
+        web.evaluateJavascript(loginScript("'ok'", false), null);
+        handler.postDelayed(new Runnable() {
+            @Override public void run() {
+                if (onTarget()) {             // el OK no llevó al login: abrirlo nosotros
+                    loginNavAt = System.currentTimeMillis();
+                    web.loadUrl(LOGIN_URL);
+                }
+            }
+        }, 2500);
     }
 
     private final Runnable checkLoginTask = new Runnable() {

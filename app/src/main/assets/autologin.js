@@ -45,8 +45,34 @@ function (u, p, mode, onlyVisible) {
     var f = findPasswords(ds[k]);
     if (f.length) { doc = ds[k]; pws = f; break; }
   }
-  if (!doc) return 'NOFORM';
-  if (mode === 'detect') return 'FORM';
+  if (!doc) {
+    // Aviso de sesión vencida ("User account or authorization expired", etc.)
+    var EXP_RE = /authorization\s*ex\s*pired|account or authorization|session (has )?(expired|timed? ?out)|not logged|please log ?in|\u8fc7\u671f|\u8d85\u65f6|\u91cd\u65b0\u767b\u5f55|sesi[o\u00f3]n (expir|venc|caduc)/i;
+    for (var q = 0; q < ds.length; q++) {
+      var nodes = ds[q].querySelectorAll('div,p,span,td,label');
+      for (var z = 0; z < nodes.length; z++) {
+        var n = nodes[z];
+        var t = txt(n.innerText || n.textContent);
+        if (t.length > 0 && t.length < 200 && EXP_RE.test(t.replace(/\s+/g, ' ')) && visible(n)) {
+          if (mode === 'ok') {
+            // Pulsar el botón OK / Aceptar / 确定 del aviso
+            var sels = ['button,input[type=button],input[type=submit]', 'a', 'span', 'div'];
+            for (var g = 0; g < sels.length; g++) {
+              var bs = ds[q].querySelectorAll(sels[g]);
+              for (var y = 0; y < bs.length; y++) {
+                var bt = txt(bs[y].innerText || bs[y].value).trim();
+                if (/^(ok|aceptar|accept|confirm|\u786e\u5b9a|\u786e\u8ba4)$/i.test(bt) && visible(bs[y])) { bs[y].click(); return 'CLICKED'; }
+              }
+            }
+            return 'NOBUTTON';
+          }
+          return 'EXPIRED';
+        }
+      }
+    }
+    return 'NOFORM';
+  }
+  if (mode === 'detect' || mode === 'ok') return 'FORM';
 
   function setVal(el, v) {
     try { el.focus(); } catch (e) {}
