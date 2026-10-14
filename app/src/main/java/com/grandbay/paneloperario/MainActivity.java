@@ -86,6 +86,8 @@ public class MainActivity extends Activity {
 
     private String autoLoginFn;
     private boolean desktopMode = true;
+    private boolean statsShown = false;     // pantalla de Estadísticas abierta
+    static final String STATS_BASE = "http://10.20.1.4:8181/rcms/web/";
     private SharedPreferences prefs;
     private ValueCallback<Uri[]> fileCallback;
     private static final int FILE_REQ = 7;
@@ -182,6 +184,7 @@ public class MainActivity extends Activity {
     }
 
     @Override public void onBackPressed() {
+        if (statsShown) { showPanel(); return; }
         if (web.canGoBack()) web.goBack(); else super.onBackPressed();
     }
 
@@ -242,6 +245,10 @@ public class MainActivity extends Activity {
     private class Bridge {
         @JavascriptInterface public void sessionLost() {
             handler.post(() -> startLogin());
+        }
+
+        @JavascriptInterface public void openPanel() {
+            handler.post(() -> showPanel());
         }
     }
 
@@ -310,18 +317,42 @@ public class MainActivity extends Activity {
         }
     };
 
+    private void showStats() {
+        statsShown = true;
+        String html;
+        try (InputStream in = getAssets().open("estadisticas.html")) {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            html = out.toString("UTF-8");
+        } catch (IOException e) {
+            html = "<p>Error cargando estadísticas</p>";
+        }
+        // Base = servidor RCMS: así las consultas salen con la misma sesión (cookies) del panel
+        web.loadDataWithBaseURL(STATS_BASE, html, "text/html", "UTF-8", STATS_BASE + "app-estadisticas");
+    }
+
+    private void showPanel() {
+        statsShown = false;
+        web.clearHistory();
+        web.loadUrl(TARGET_URL);
+    }
+
     private void loginOk() {
         loggingIn = false;
         lastLoginOk = System.currentTimeMillis();
         handler.removeCallbacks(loginTimeout);
         handler.removeCallbacks(step);
         if (Build.VERSION.SDK_INT >= 21) CookieManager.getInstance().flush();
+        if (statsShown) { overlay.setVisibility(View.GONE); showStats(); return; }
         showOverlay("Abriendo panel…");
         web.loadUrl(TARGET_URL);           // la cortina se quita cuando el panel carga
     }
 
     private void goManual(String msg) {
         loggingIn = false;
+        statsShown = false;
         manualMode = true;
         handler.removeCallbacks(loginTimeout);
         handler.removeCallbacks(step);
@@ -356,12 +387,17 @@ public class MainActivity extends Activity {
         }
 
         @Override public void onPageCommitVisible(WebView v, String url) {
+            if (statsShown && !loggingIn) return;
             v.evaluateJavascript(desktopJs(), null);   // antes de que se vea, para que no "salte"
         }
 
         @Override public void onPageFinished(WebView v, String url) {
             if (mainFrameError) { showError(); return; }
             errorView.setVisibility(View.GONE);
+            if (statsShown && !loggingIn) {          // pantalla propia de Estadísticas
+                overlay.setVisibility(View.GONE);
+                return;
+            }
             prepPage();
 
             if (loggingIn) {
@@ -381,6 +417,7 @@ public class MainActivity extends Activity {
         }
 
         @Override public void doUpdateVisitedHistory(WebView v, String url, boolean isReload) {
+            if (statsShown && !loggingIn) return;
             prepPage();
             if (!loggingIn && !manualMode && url != null && web.getProgress() == 100
                     && !url.contains(TARGET_KEY) && url.toLowerCase(java.util.Locale.US).contains("login")) {
@@ -500,12 +537,14 @@ public class MainActivity extends Activity {
         b.setLayoutParams(lp);
         b.setOnClickListener(v -> {
             PopupMenu m = new PopupMenu(this, v);
-            m.getMenu().add(0, 1, 0, "Recargar panel");
+            m.getMenu().add(0, 4, 0, statsShown ? "Volver al panel" : "Estadísticas de tareas");
+            m.getMenu().add(0, 1, 0, "Recargar");
             m.getMenu().add(0, 2, 1, desktopMode ? "Ver en modo celular" : "Ver en modo escritorio");
             m.getMenu().add(0, 3, 2, "Iniciar sesión de nuevo");
             m.setOnMenuItemClickListener(it -> {
                 switch (it.getItemId()) {
-                    case 1: web.reload(); break;
+                    case 4: if (statsShown) showPanel(); else showStats(); break;
+                    case 1: if (statsShown) showStats(); else web.reload(); break;
                     case 2:
                         desktopMode = !desktopMode;
                         prefs.edit().putBoolean("desktop", desktopMode).apply();

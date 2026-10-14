@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Estadísticas de tareas</title>
+<style>
+  :root{
+    --bg:#14171C; --card:#1D222A; --card2:#232A33; --line:#2E3640;
+    --text:#E8ECF1; --muted:#8A95A3; --accent:#2F6FDE;
+    --r0:#F28C28; --r1:#2BB3C0; --r2:#A78BFA; --r3:#7BC67E;
+    --ok:#3FB37F; --warn:#E5A13A; --err:#E5534B;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;background:var(--bg);color:var(--text);
+    font:15px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  .wrap{max-width:1100px;margin:0 auto;padding:14px 14px 70px}
+  header{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+  header h1{font-size:18px;margin:0;font-weight:650;flex:1;letter-spacing:.2px}
+  header h1 small{display:block;font-size:12px;color:var(--muted);font-weight:500}
+  .btn{background:var(--card2);color:var(--text);border:1px solid var(--line);
+    border-radius:10px;padding:9px 12px;font:inherit;font-size:14px}
+  .btn:active{transform:scale(.97)}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+
+  .bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px}
+  .chips{display:flex;background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  .chips button{background:none;border:0;color:var(--muted);padding:9px 14px;font:inherit;font-size:14px}
+  .chips button.on{background:var(--accent);color:#fff}
+  input[type=date]{background:var(--card);color:var(--text);border:1px solid var(--line);
+    border-radius:10px;padding:8px 10px;font:inherit;font-size:14px;color-scheme:dark}
+  .status{margin-left:auto;font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}
+  .dot.ok{background:var(--ok)} .dot.err{background:var(--err)} .dot.load{background:var(--warn)}
+
+  .kpis{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:12px}
+  @media(max-width:699px){.kpis.odd .kpi:first-child{grid-column:1/-1}}
+  @media(min-width:700px){.kpis{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}}
+  .kpi{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 14px}
+  .kpi .l{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px}
+  .kpi .v{font-size:28px;font-weight:700;margin-top:2px;font-variant-numeric:tabular-nums}
+  .kpi .s{font-size:12px;color:var(--muted)}
+  .sw{width:10px;height:10px;border-radius:3px;display:inline-block}
+
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 12px 8px;margin-bottom:12px}
+  .card h2{font-size:14px;margin:0 0 8px;font-weight:600;color:var(--muted);display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  .legend{display:flex;gap:12px;flex-wrap:wrap;font-weight:500;color:var(--text)}
+  .legend span{display:flex;align-items:center;gap:5px;font-size:13px}
+  .chart{position:relative}
+  svg{display:block;width:100%;height:auto;touch-action:pan-y}
+  .tip{position:absolute;pointer-events:none;background:#0B0E12F0;border:1px solid var(--line);
+    border-radius:10px;padding:8px 10px;font-size:13px;min-width:120px;display:none;z-index:2}
+  .tip b{display:block;margin-bottom:3px}
+  .tip div{display:flex;justify-content:space-between;gap:12px}
+
+  .tablewrap{overflow-x:auto}
+  table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums;font-size:14px}
+  th,td{padding:7px 8px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap}
+  th:first-child,td:first-child{text-align:left}
+  th{color:var(--muted);font-weight:600;font-size:12px;position:sticky;top:0;background:var(--card)}
+  tr.now td{background:#2F6FDE22}
+  tr.zero td{color:var(--muted)}
+  tfoot td{font-weight:700;border-top:2px solid var(--line);border-bottom:0}
+
+  .msg{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px;text-align:center;color:var(--muted)}
+  .msg.err{border-color:#E5534B66;color:#F2B8B5}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <button class="btn" id="back">← Panel</button>
+    <h1>Tareas por hora<small>RCS-2000 · Robots</small></h1>
+    <button class="btn primary" id="refresh">Actualizar</button>
+  </header>
+
+  <div class="bar">
+    <div class="chips">
+      <button data-d="0" class="on">Hoy</button>
+      <button data-d="-1">Ayer</button>
+    </div>
+    <input type="date" id="date">
+    <div class="status"><span class="dot" id="dot"></span><span id="stat">—</span></div>
+  </div>
+
+  <div id="msg" class="msg" style="display:none"></div>
+
+  <div id="content" style="display:none">
+    <div class="kpis" id="kpis"></div>
+
+    <div class="card">
+      <h2>Tareas por hora <span class="legend" id="legend"></span></h2>
+      <div class="chart" id="chart"><div class="tip" id="tip"></div></div>
+    </div>
+
+    <div class="card">
+      <h2>Detalle por hora</h2>
+      <div class="tablewrap"><table id="table"></table></div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  var URL_TREND = 'statisticsMgr/findTaskStaticsTrend.action';
+  var COLORS = ['var(--r0)','var(--r1)','var(--r2)','var(--r3)'];
+  var HEX = ['#F28C28','#2BB3C0','#A78BFA','#7BC67E'];
+  var REFRESH_MS = 60000;
+
+  var $ = function(id){ return document.getElementById(id); };
+  var dateInput = $('date');
+  var timer = null, lastData = null, busy = false;
+
+  function pad(n){ return (n<10?'0':'')+n; }
+  function ymd(d){ return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate()); }
+  function today(){ return ymd(new Date()); }
+  function isToday(){ return dateInput.value === today(); }
+
+  function setStatus(kind, text){
+    $('dot').className = 'dot ' + kind;
+    $('stat').textContent = text;
+  }
+  function showMsg(text, isErr){
+    var m = $('msg');
+    m.textContent = text;
+    m.className = 'msg' + (isErr ? ' err' : '');
+    m.style.display = 'block';
+  }
+
+  function load(){
+    if (busy) return;
+    busy = true;
+    setStatus('load', 'Consultando…');
+    var d = dateInput.value || today();
+    var body = new URLSearchParams();
+    body.append('taskTypCodes', '');
+    body.append('elcMapCode', '');
+    body.append('hisData', 'false');
+    body.append('searchYear', '');
+    body.append('sdateTo', d + ' 00:00:00');
+    body.append('edateTo', d + ' 23:59:59');
+    body.append('chartTyp', '1');
+
+    fetch(URL_TREND, {
+      method: 'POST',
+      credentials: 'include',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                'X-Requested-With': 'XMLHttpRequest'},
+      body: body.toString()
+    }).then(function(r){ return r.text(); })
+      .then(function(t){
+        var j;
+        try { j = JSON.parse(t); } catch(e) { j = null; }
+        if (!j) {
+          // Llegó HTML (login) en vez de datos: sesión vencida
+          setStatus('err', 'Sesión vencida, reconectando…');
+          if (window.PanelApp) PanelApp.sessionLost();
+          return;
+        }
+        if (j.code !== 0 && j.code !== '0') {
+          var m = String(j.msg || 'Error ' + j.code);
+          if (/expired|login|authoriz/i.test(m) && window.PanelApp) PanelApp.sessionLost();
+          setStatus('err', 'Error');
+          showMsg('El RCS respondió: ' + m, true);
+          return;
+        }
+        lastData = parse(j);
+        render(lastData);
+        var now = new Date();
+        setStatus('ok', 'Actualizado ' + pad(now.getHours()) + ':' + pad(now.getMinutes()) + ':' + pad(now.getSeconds()));
+      })
+      .catch(function(e){
+        setStatus('err', 'Sin conexión');
+        showMsg('No se pudo consultar el RCS. Verifique la WiFi de la planta.\n(' + e.message + ')', true);
+      })
+      .then(function(){ busy = false; });
+  }
+
+  // {code, data:[{countT:[{data:[...], series, seriesValue}], legend:[...]}]}
+  function parse(j){
+    var block = (j.data && j.data[0]) || {};
+    var legend = (block.legend || []).map(String);
+    var series = (block.countT || []).map(function(s, i){
+      var vals = (s.data || []).map(function(v){ var n = parseFloat(v); return isNaN(n) ? 0 : n; });
+      while (vals.length < legend.length) vals.push(0);
+      return { name: String(s.series || s.seriesValue || ('Serie ' + (i+1))), vals: vals };
+    });
+    if (!legend.length && series.length) {
+      for (var h = 0; h < series[0].vals.length; h++) legend.push(pad(h));
+    }
+    return { legend: legend, series: series };
+  }
+
+  function sum(a){ return a.reduce(function(x,y){ return x+y; }, 0); }
+
+  function render(d){
+    $('msg').style.display = 'none';
+    if (!d.series.length) {
+      $('content').style.display = 'none';
+      showMsg('No hay datos de tareas para esta fecha.', false);
+      return;
+    }
+    $('content').style.display = 'block';
+
+    var totals = d.legend.map(function(_, i){
+      return sum(d.series.map(function(s){ return s.vals[i] || 0; }));
+    });
+    var grand = sum(totals);
+    var peak = 0;
+    totals.forEach(function(v, i){ if (v > totals[peak]) peak = i; });
+    var curH = new Date().getHours();
+    var curIdx = isToday() ? d.legend.indexOf(pad(curH)) : -1;
+
+    // KPIs
+    var k = '';
+    k += kpi('Total del día', grand, d.series.length > 1 ? 'Todos los robots' : '');
+    d.series.forEach(function(s, i){
+      var t = sum(s.vals);
+      k += kpi('<span class="sw" style="background:'+COLORS[i%4]+'"></span>Robot ' + esc(s.name), t,
+               grand ? Math.round(t*100/grand) + '% del total' : '');
+    });
+    k += kpi('Hora pico', grand ? d.legend[peak] + ':00' : '—', grand ? totals[peak] + ' tareas' : '');
+    if (curIdx >= 0) {
+      k += kpi('Hora actual (' + d.legend[curIdx] + ':00)', totals[curIdx], 'en curso');
+    } else {
+      var active = totals.filter(function(v){ return v > 0; }).length;
+      k += kpi('Promedio por hora', active ? (grand/active).toFixed(1) : '0', active + ' horas con actividad');
+    }
+    $('kpis').innerHTML = k;
+    $('kpis').className = 'kpis' + ((d.series.length + 3) % 2 ? ' odd' : '');
+
+    $('legend').innerHTML = d.series.map(function(s, i){
+      return '<span><i class="sw" style="background:'+COLORS[i%4]+'"></i>' + esc(s.name) + '</span>';
+    }).join('');
+
+    drawChart(d, curIdx);
+    drawTable(d, totals, curIdx);
+  }
+
+  function kpi(label, value, sub){
+    return '<div class="kpi"><div class="l">' + label + '</div><div class="v">' + value +
+           '</div><div class="s">' + (sub || '&nbsp;') + '</div></div>';
+  }
+
+  function esc(s){ return String(s).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+
+  function niceMax(v){
+    if (v <= 5) return 5;
+    var p = Math.pow(10, Math.floor(Math.log10(v)));
+    var n = v / p;
+    var m = n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10;
+    return m * p;
+  }
+
+  function drawChart(d, curIdx){
+    var host = $('chart');
+    var W = Math.max(320, host.clientWidth), H = Math.round(Math.min(340, Math.max(200, W * 0.45)));
+    var padL = 30, padR = 10, padT = 10, padB = 26;
+    var n = d.legend.length;
+    var max = 0;
+    d.series.forEach(function(s){ s.vals.forEach(function(v){ if (v > max) max = v; }); });
+    var ymax = niceMax(max || 1);
+    var x = function(i){ return padL + (n <= 1 ? 0 : i * (W - padL - padR) / (n - 1)); };
+    var y = function(v){ return padT + (H - padT - padB) * (1 - v / ymax); };
+
+    var g = '';
+    var ticks = 5;
+    for (var t = 0; t <= ticks; t++) {
+      var val = ymax * t / ticks, yy = y(val);
+      g += '<line x1="'+padL+'" x2="'+(W-padR)+'" y1="'+yy+'" y2="'+yy+'" stroke="#2E3640" stroke-width="1"/>';
+      g += '<text x="'+(padL-6)+'" y="'+(yy+4)+'" fill="#8A95A3" font-size="11" text-anchor="end">'+(Math.round(val*10)/10)+'</text>';
+    }
+    var every = W < 520 ? 3 : W < 800 ? 2 : 1;
+    d.legend.forEach(function(l, i){
+      if (i % every === 0 || i === n-1)
+        g += '<text x="'+x(i)+'" y="'+(H-8)+'" fill="#8A95A3" font-size="11" text-anchor="middle">'+esc(l)+'</text>';
+    });
+    if (curIdx >= 0) {
+      g += '<line x1="'+x(curIdx)+'" x2="'+x(curIdx)+'" y1="'+padT+'" y2="'+(H-padB)+'" stroke="#2F6FDE" stroke-width="1.5" stroke-dasharray="4 4"/>';
+    }
+    d.series.forEach(function(s, si){
+      var c = HEX[si % 4];
+      var pts = s.vals.slice(0, n).map(function(v, i){ return x(i).toFixed(1) + ',' + y(v).toFixed(1); });
+      g += '<polyline points="'+pts.join(' ')+'" fill="none" stroke="'+c+'" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>';
+      s.vals.slice(0, n).forEach(function(v, i){
+        g += '<circle cx="'+x(i).toFixed(1)+'" cy="'+y(v).toFixed(1)+'" r="3" fill="'+c+'" stroke="#1D222A" stroke-width="1.5"/>';
+      });
+    });
+    g += '<line id="hov" x1="0" x2="0" y1="'+padT+'" y2="'+(H-padB)+'" stroke="#E8ECF1" stroke-opacity=".35" stroke-width="1" style="display:none"/>';
+
+    var svg = '<svg viewBox="0 0 '+W+' '+H+'" id="svg">' + g + '</svg>';
+    host.innerHTML = svg + '<div class="tip" id="tip"></div>';
+
+    var svgEl = $('svg'), tip = $('tip'), hov = $('hov');
+    function at(clientX){
+      var r = svgEl.getBoundingClientRect();
+      var px = (clientX - r.left) * W / r.width;
+      var i = Math.round((px - padL) / ((W - padL - padR) / Math.max(1, n - 1)));
+      i = Math.max(0, Math.min(n - 1, i));
+      hov.setAttribute('x1', x(i)); hov.setAttribute('x2', x(i)); hov.style.display = '';
+      var h = '<b>' + esc(d.legend[i]) + ':00 – ' + esc(d.legend[i]) + ':59</b>';
+      var tot = 0;
+      d.series.forEach(function(s, si){
+        tot += s.vals[i] || 0;
+        h += '<div><span><i class="sw" style="background:'+COLORS[si%4]+'"></i> ' + esc(s.name) + '</span><b>' + (s.vals[i] || 0) + '</b></div>';
+      });
+      if (d.series.length > 1) h += '<div><span>Total</span><b>' + tot + '</b></div>';
+      tip.innerHTML = h;
+      tip.style.display = 'block';
+      var left = x(i) * r.width / W;
+      var tw = tip.offsetWidth;
+      tip.style.left = Math.max(0, Math.min(r.width - tw, left + 12 > r.width - tw ? left - tw - 12 : left + 12)) + 'px';
+      tip.style.top = '8px';
+    }
+    function hide(){ tip.style.display = 'none'; hov.style.display = 'none'; }
+    svgEl.addEventListener('touchstart', function(e){ at(e.touches[0].clientX); }, {passive:true});
+    svgEl.addEventListener('touchmove', function(e){ at(e.touches[0].clientX); }, {passive:true});
+    svgEl.addEventListener('mousemove', function(e){ at(e.clientX); });
+    svgEl.addEventListener('mouseleave', hide);
+    document.addEventListener('touchstart', function(e){ if (!svgEl.contains(e.target)) hide(); }, {passive:true});
+  }
+
+  function drawTable(d, totals, curIdx){
+    var multi = d.series.length > 1;
+    var h = '<thead><tr><th>Hora</th>';
+    d.series.forEach(function(s, i){ h += '<th><i class="sw" style="background:'+COLORS[i%4]+'"></i> ' + esc(s.name) + '</th>'; });
+    if (multi) h += '<th>Total</th>';
+    h += '</tr></thead><tbody>';
+    d.legend.forEach(function(l, i){
+      var cls = (i === curIdx ? 'now' : '') + (totals[i] === 0 ? ' zero' : '');
+      h += '<tr class="' + cls + '"><td>' + esc(l) + ':00</td>';
+      d.series.forEach(function(s){ h += '<td>' + (s.vals[i] || 0) + '</td>'; });
+      if (multi) h += '<td><b>' + totals[i] + '</b></td>';
+      h += '</tr>';
+    });
+    h += '</tbody><tfoot><tr><td>Total</td>';
+    d.series.forEach(function(s){ h += '<td>' + sum(s.vals) + '</td>'; });
+    if (multi) h += '<td>' + sum(totals) + '</td>';
+    h += '</tr></tfoot>';
+    $('table').innerHTML = h;
+  }
+
+  function schedule(){
+    if (timer) clearInterval(timer);
+    timer = isToday() ? setInterval(load, REFRESH_MS) : null;
+  }
+
+  function selectDay(offset){
+    var d = new Date(); d.setDate(d.getDate() + offset);
+    dateInput.value = ymd(d);
+    markChips();
+    schedule(); load();
+  }
+  function markChips(){
+    var t = today(), y = new Date(); y.setDate(y.getDate() - 1);
+    [].forEach.call(document.querySelectorAll('.chips button'), function(b){
+      var v = b.getAttribute('data-d') === '0' ? t : ymd(y);
+      b.className = dateInput.value === v ? 'on' : '';
+    });
+  }
+
+  [].forEach.call(document.querySelectorAll('.chips button'), function(b){
+    b.addEventListener('click', function(){ selectDay(parseInt(b.getAttribute('data-d'), 10)); });
+  });
+  dateInput.addEventListener('change', function(){ markChips(); schedule(); load(); });
+  $('refresh').addEventListener('click', load);
+  $('back').addEventListener('click', function(){
+    if (window.PanelApp) PanelApp.openPanel(); else history.back();
+  });
+  var rt = null;
+  window.addEventListener('resize', function(){
+    clearTimeout(rt);
+    rt = setTimeout(function(){ if (lastData) render(lastData); }, 200);
+  });
+  document.addEventListener('visibilitychange', function(){ if (!document.hidden) load(); });
+
+  dateInput.max = today();
+  selectDay(0);
+})();
+</script>
+</body>
+</html>
