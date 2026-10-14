@@ -249,6 +249,36 @@ public class MainActivity extends Activity {
             handler.post(() -> startLogin());
         }
 
+        /** Borra cookies y fuerza un inicio de sesión completo desde cero. */
+        @JavascriptInterface public void freshLogin() {
+            handler.post(() -> {
+                manualMode = false;
+                quickRepeats = 0;
+                lastLoginOk = 0;
+                if (Build.VERSION.SDK_INT >= 21) {
+                    CookieManager.getInstance().removeAllCookies(ok -> {
+                        CookieManager.getInstance().flush();
+                        startLogin();
+                    });
+                } else {
+                    startLogin();
+                }
+            });
+        }
+
+        /** Nombres de las cookies de sesión (sin valores), para diagnóstico. */
+        @JavascriptInterface public String cookieNames() {
+            String c = CookieManager.getInstance().getCookie(STATS_BASE + "statisticsMgr/x.action");
+            if (c == null || c.trim().isEmpty()) return "(ninguna)";
+            StringBuilder b = new StringBuilder();
+            for (String part : c.split(";")) {
+                String name = part.split("=", 2)[0].trim();
+                if (b.length() > 0) b.append(", ");
+                b.append(name);
+            }
+            return b.toString();
+        }
+
         @JavascriptInterface public String version() {
             try { return getPackageManager().getPackageInfo(getPackageName(), 0).versionName; }
             catch (Exception e) { return "?"; }

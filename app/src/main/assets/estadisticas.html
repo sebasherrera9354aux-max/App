@@ -215,18 +215,23 @@
       body: bodyStr}).then(function(r){ return r.text(); });
   }
 
-  // El RCS pide iniciar sesión: reconectar una vez por minuto como máximo
+  // El RCS pide iniciar sesión: borrar sesión y entrar desde cero (máximo una vez cada 2 min)
   function relogin(){
     var last = 0;
     try { last = parseInt(localStorage.getItem('relogAt') || '0', 10); } catch (e) {}
-    if (Date.now() - last > 60000 && window.PanelApp) {
+    if (Date.now() - last > 120000 && window.PanelApp && PanelApp.freshLogin) {
       try { localStorage.setItem('relogAt', String(Date.now())); } catch (e) {}
-      setStatus('load', 'Iniciando sesión…');
-      PanelApp.sessionLost();
+      setStatus('load', 'Iniciando sesión de nuevo…');
+      PanelApp.freshLogin();
     } else {
+      var ck = '';
+      try { ck = PanelApp.cookieNames(); } catch (e) { ck = '?'; }
       setStatus('err', 'Sin sesión');
-      showMsg('El RCS no acepta la sesión para esta consulta (resultCode: redirect).\n' +
-              'Toque ⋮ → Iniciar sesión de nuevo, y luego vuelva a Estadísticas.', true);
+      showMsg('El RCS no acepta la sesión para esta consulta (resultCode: redirect), ' +
+              'aun después de iniciar sesión desde cero.\n\n' +
+              'Datos de sesión en la app: ' + ck + '\n\n' +
+              'Prueba: cierre la sesión de admin en el computador (o cierre esa pestaña del RCS), ' +
+              'espere 2 minutos y toque Actualizar.', true);
     }
   }
 
