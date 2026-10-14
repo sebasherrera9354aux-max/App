@@ -224,14 +224,21 @@
       setStatus('load', 'Iniciando sesión de nuevo…');
       PanelApp.freshLogin();
     } else {
-      var ck = '';
+      var ck = '', tr = '';
       try { ck = PanelApp.cookieNames(); } catch (e) { ck = '?'; }
+      try { tr = PanelApp.loginTrail(); } catch (e) { tr = '?'; }
       setStatus('err', 'Sin sesión');
-      showMsg('El RCS no acepta la sesión para esta consulta (resultCode: redirect), ' +
-              'aun después de iniciar sesión desde cero.\n\n' +
-              'Datos de sesión en la app: ' + ck + '\n\n' +
-              'Prueba: cierre la sesión de admin en el computador (o cierre esa pestaña del RCS), ' +
-              'espere 2 minutos y toque Actualizar.', true);
+      showMsg('El RCS no acepta la sesión para esta consulta (resultCode: redirect).\n\n' +
+              'Datos de sesión: ' + ck + '\n\n' +
+              'Recorrido del login: ' + tr + '\n\n' +
+              'Toque el botón para entrar a mano con admin. Si después de entrar a mano ' +
+              'carga la gráfica, el problema es solo el login automático.', true);
+      var b = document.createElement('button');
+      b.className = 'btn primary';
+      b.style.cssText = 'display:block;margin:14px auto 0;font-size:15px';
+      b.textContent = 'Entrar manualmente al RCS';
+      b.onclick = function(){ try { PanelApp.manualLogin(); } catch (e) {} };
+      $('msg').appendChild(b);
     }
   }
 

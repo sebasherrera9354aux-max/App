@@ -10,8 +10,8 @@ android {
         applicationId 'com.grandbay.paneloperario'
         minSdk 21
         targetSdk 35
-        versionCode 11
-        versionName '2.7'
+        versionCode 12
+        versionName '2.8'
     }
 
     // Llave fija: todas las versiones se firman igual y se instalan encima de la anterior

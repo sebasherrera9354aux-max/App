@@ -87,7 +87,10 @@ public class MainActivity extends Activity {
     private String autoLoginFn;
     private boolean desktopMode = true;
     private boolean statsShown = false;
-    private volatile String uaString = "";     // pantalla de Estadísticas abierta
+    private volatile String uaString = "";
+    private final java.util.ArrayList<String> trail = new java.util.ArrayList<>();
+    private boolean statsAfterManual = false;
+    private boolean manualSawForm = false;     // pantalla de Estadísticas abierta
     static final String STATS_BASE = "http://10.20.1.4:8181/rcms/web/";
     private SharedPreferences prefs;
     private ValueCallback<Uri[]> fileCallback;
@@ -279,6 +282,25 @@ public class MainActivity extends Activity {
             return b.toString();
         }
 
+        @JavascriptInterface public String loginTrail() {
+            return trail.isEmpty() ? "(sin registro)" : android.text.TextUtils.join(" → ", trail);
+        }
+
+        /** Abre el login del RCS para entrar a mano; al entrar vuelve a Estadísticas. */
+        @JavascriptInterface public void manualLogin() {
+            handler.post(() -> {
+                Runnable go = () -> {
+                    statsAfterManual = true;
+                    manualSawForm = false;
+                    trail.clear();
+                    goManual("Ingrese usuario y contraseña del RCS");
+                };
+                if (Build.VERSION.SDK_INT >= 21) {
+                    CookieManager.getInstance().removeAllCookies(ok -> go.run());
+                } else go.run();
+            });
+        }
+
         @JavascriptInterface public String version() {
             try { return getPackageManager().getPackageInfo(getPackageName(), 0).versionName; }
             catch (Exception e) { return "?"; }
@@ -348,6 +370,7 @@ public class MainActivity extends Activity {
 
         loggingIn = true;
         loginTries = 0;
+        trail.clear();
         showOverlay("Conectando…");
         nextTry();
     }
@@ -387,6 +410,7 @@ public class MainActivity extends Activity {
                     if (lastSubmit == 0 || now - lastSubmit > 3500) {
                         submits++;
                         lastSubmit = now;
+                        trail.add("[envío " + submits + "]");
                         web.requestFocus();
                         web.evaluateJavascript(loginScript(String.valueOf(submits)), null);
                     }
@@ -453,10 +477,12 @@ public class MainActivity extends Activity {
             web.evaluateJavascript(loginScript("'detect'"), r -> {
                 String url = web.getUrl() == null ? "" : web.getUrl();
                 boolean form = r != null && r.contains("FORM") && !r.contains("NOFORM");
-                if (!form && web.getProgress() == 100) {
+                if (form) manualSawForm = true;
+                if (!form && web.getProgress() == 100 && (manualSawForm || !statsAfterManual)) {
                     manualMode = false;
                     quickRepeats = 0;
                     lastLoginOk = System.currentTimeMillis();
+                    if (statsAfterManual) { statsAfterManual = false; showStats(); return; }
                     if (!url.contains(TARGET_KEY)) web.loadUrl(TARGET_URL);
                 } else {
                     handler.postDelayed(this, 1500);
@@ -470,6 +496,11 @@ public class MainActivity extends Activity {
     private class MainClient extends WebViewClient {
         @Override public void onPageStarted(WebView v, String url, Bitmap favicon) {
             mainFrameError = false;
+            if ((loggingIn || manualMode) && url != null) {
+                String u = url.replace("http://10.20.1.4:8181", "");
+                if (trail.isEmpty() || !trail.get(trail.size() - 1).equals(u)) trail.add(u);
+                while (trail.size() > 12) trail.remove(0);
+            }
         }
 
         @Override public void onPageCommitVisible(WebView v, String url) {
