@@ -10,14 +10,27 @@ android {
         applicationId 'com.grandbay.paneloperario'
         minSdk 21
         targetSdk 35
-        versionCode 9
-        versionName '2.5'
+        versionCode 10
+        versionName '2.6'
+    }
+
+    // Llave fija: todas las versiones se firman igual y se instalan encima de la anterior
+    signingConfigs {
+        fija {
+            storeFile file('paneloperario.jks')
+            storePassword 'grandbay2026'
+            keyAlias 'paneloperario'
+            keyPassword 'grandbay2026'
+        }
     }
 
     buildTypes {
         release {
             minifyEnabled false
-            signingConfig signingConfigs.debug   // para que el APK release también se pueda instalar
+            signingConfig signingConfigs.fija
+        }
+        debug {
+            signingConfig signingConfigs.fija
         }
     }
 

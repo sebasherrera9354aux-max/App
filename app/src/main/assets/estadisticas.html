@@ -70,7 +70,7 @@
 <div class="wrap">
   <header>
     <button class="btn" id="back">← Panel</button>
-    <h1>Tareas por hora<small>RCS-2000 · Robots</small></h1>
+    <h1>Tareas por hora<small>RCS-2000 · Robots · <span id="ver"></span></small></h1>
     <button class="btn primary" id="refresh">Actualizar</button>
   </header>
 
@@ -413,6 +413,7 @@
   });
   document.addEventListener('visibilitychange', function(){ if (!document.hidden) load(); });
 
+  try { if (window.PanelApp && PanelApp.version) $('ver').textContent = 'v' + PanelApp.version(); } catch (e) {}
   dateInput.max = today();
   selectDay(0);
 })();

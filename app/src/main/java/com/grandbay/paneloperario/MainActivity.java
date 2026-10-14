@@ -249,6 +249,11 @@ public class MainActivity extends Activity {
             handler.post(() -> startLogin());
         }
 
+        @JavascriptInterface public String version() {
+            try { return getPackageManager().getPackageInfo(getPackageName(), 0).versionName; }
+            catch (Exception e) { return "?"; }
+        }
+
         @JavascriptInterface public void openPanel() {
             handler.post(() -> showPanel());
         }
