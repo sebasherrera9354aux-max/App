@@ -141,13 +141,7 @@
     body.append('edateTo', d + ' 23:59:59');
     body.append('chartTyp', '1');
 
-    fetch(URL_TREND, {
-      method: 'POST',
-      credentials: 'include',
-      headers: {'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                'X-Requested-With': 'XMLHttpRequest'},
-      body: body.toString()
-    }).then(function(r){ return r.text(); })
+    rcsPost(URL_TREND, body.toString())
       .then(function(t){
         var j;
         try { j = JSON.parse(t); } catch(e) { j = null; }
@@ -157,6 +151,7 @@
           if (window.PanelApp) PanelApp.sessionLost();
           return;
         }
+        if (j.resultCode === 'redirect') { relogin(); return; }
         var parsed = parse(j);
         if (!parsed.series.length && j.code !== 0 && j.code !== '0') {
           var m = String(j.msg || j.message || j.errMsg || j.error || '');
@@ -197,6 +192,42 @@
       for (var h = 0; h < series[0].vals.length; h++) legend.push(pad(h));
     }
     return { legend: legend, series: series };
+  }
+
+  // Consulta hecha por la app (con la sesión del panel); si no está, usa fetch normal
+  var pending = {}, seq = 0;
+  window.__nativeResp = function(id, code, text){
+    var p = pending[id]; if (!p) return;
+    delete pending[id];
+    if (code < 0) p.reject(new Error(text)); else p.resolve(text);
+  };
+  function rcsPost(path, bodyStr){
+    if (window.PanelApp && PanelApp.post) {
+      return new Promise(function(resolve, reject){
+        var id = 'r' + (++seq);
+        pending[id] = {resolve: resolve, reject: reject};
+        setTimeout(function(){ if (pending[id]) { delete pending[id]; reject(new Error('tiempo agotado')); } }, 20000);
+        PanelApp.post(id, path, bodyStr);
+      });
+    }
+    return fetch(path, {method: 'POST', credentials: 'include',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest'},
+      body: bodyStr}).then(function(r){ return r.text(); });
+  }
+
+  // El RCS pide iniciar sesión: reconectar una vez por minuto como máximo
+  function relogin(){
+    var last = 0;
+    try { last = parseInt(localStorage.getItem('relogAt') || '0', 10); } catch (e) {}
+    if (Date.now() - last > 60000 && window.PanelApp) {
+      try { localStorage.setItem('relogAt', String(Date.now())); } catch (e) {}
+      setStatus('load', 'Iniciando sesión…');
+      PanelApp.sessionLost();
+    } else {
+      setStatus('err', 'Sin sesión');
+      showMsg('El RCS no acepta la sesión para esta consulta (resultCode: redirect).\n' +
+              'Toque ⋮ → Iniciar sesión de nuevo, y luego vuelva a Estadísticas.', true);
+    }
   }
 
   function sum(a){ return a.reduce(function(x,y){ return x+y; }, 0); }

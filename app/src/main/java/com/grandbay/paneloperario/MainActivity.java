@@ -86,7 +86,8 @@ public class MainActivity extends Activity {
 
     private String autoLoginFn;
     private boolean desktopMode = true;
-    private boolean statsShown = false;     // pantalla de Estadísticas abierta
+    private boolean statsShown = false;
+    private volatile String uaString = "";     // pantalla de Estadísticas abierta
     static final String STATS_BASE = "http://10.20.1.4:8181/rcms/web/";
     private SharedPreferences prefs;
     private ValueCallback<Uri[]> fileCallback;
@@ -133,6 +134,7 @@ public class MainActivity extends Activity {
         s.setDomStorageEnabled(true);
         s.setDatabaseEnabled(true);
         if (desktopMode) s.setUserAgentString(DESKTOP_UA);   // la página cree que es un computador
+        uaString = s.getUserAgentString();
         s.setJavaScriptCanOpenWindowsAutomatically(true);
         s.setSupportMultipleWindows(false);     // window.open / target=_blank se abren aquí mismo
         s.setAllowFileAccess(true);
@@ -249,6 +251,55 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface public void openPanel() {
             handler.post(() -> showPanel());
+        }
+
+        /** Consulta POST al RCMS hecha por la app, con las cookies de la sesión del panel. */
+        @JavascriptInterface public void post(final String id, final String path, final String body) {
+            new Thread(() -> {
+                int code = 0;
+                String text;
+                try {
+                    if (path.contains("://") || path.contains("..")) throw new IOException("ruta no permitida");
+                    String url = STATS_BASE + path;
+                    java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+                    c.setConnectTimeout(8000);
+                    c.setReadTimeout(15000);
+                    c.setInstanceFollowRedirects(false);
+                    c.setRequestMethod("POST");
+                    c.setDoOutput(true);
+                    String ck = CookieManager.getInstance().getCookie(url);
+                    if (ck != null) c.setRequestProperty("Cookie", ck);
+                    c.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8");
+                    c.setRequestProperty("Accept", "*/*");
+                    c.setRequestProperty("X-Requested-With", "XMLHttpRequest");
+                    c.setRequestProperty("Origin", "http://10.20.1.4:8181");
+                    c.setRequestProperty("Referer", TARGET_URL);
+                    if (uaString != null && !uaString.isEmpty()) c.setRequestProperty("User-Agent", uaString);
+                    byte[] out = body.getBytes("UTF-8");
+                    c.setFixedLengthStreamingMode(out.length);
+                    c.getOutputStream().write(out);
+                    code = c.getResponseCode();
+                    java.util.List<String> sc = c.getHeaderFields().get("Set-Cookie");
+                    if (sc != null) for (String v : sc) CookieManager.getInstance().setCookie(url, v);
+                    InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();
+                    ByteArrayOutputStream bo = new ByteArrayOutputStream();
+                    if (in != null) {
+                        byte[] buf = new byte[8192];
+                        int n;
+                        while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
+                        in.close();
+                    }
+                    text = bo.toString("UTF-8");
+                    if (code >= 300 && code < 400) text = "{\"resultCode\":\"redirect\",\"message\":\"HTTP " + code + "\"}";
+                    c.disconnect();
+                } catch (Exception e) {
+                    code = -1;
+                    text = String.valueOf(e.getMessage());
+                }
+                final String js = "window.__nativeResp && window.__nativeResp(" + JSONObject.quote(id) + ","
+                        + code + "," + JSONObject.quote(text) + ")";
+                handler.post(() -> web.evaluateJavascript(js, null));
+            }).start();
         }
     }
 
