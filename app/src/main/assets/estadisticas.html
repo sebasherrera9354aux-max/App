@@ -63,7 +63,7 @@
   tfoot td{font-weight:700;border-top:2px solid var(--line);border-bottom:0}
 
   .msg{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px;text-align:center;color:var(--muted)}
-  .msg.err{border-color:#E5534B66;color:#F2B8B5}
+  .msg.err{border-color:#E5534B66;color:#F2B8B5;white-space:pre-wrap;word-break:break-all;text-align:left;font-size:13px}
 </style>
 </head>
 <body>
@@ -157,14 +157,16 @@
           if (window.PanelApp) PanelApp.sessionLost();
           return;
         }
-        if (j.code !== 0 && j.code !== '0') {
-          var m = String(j.msg || 'Error ' + j.code);
-          if (/expired|login|authoriz/i.test(m) && window.PanelApp) PanelApp.sessionLost();
+        var parsed = parse(j);
+        if (!parsed.series.length && j.code !== 0 && j.code !== '0') {
+          var m = String(j.msg || j.message || j.errMsg || j.error || '');
+          if (/expired|login|authoriz|session/i.test(m + ' ' + t.slice(0, 300)) && window.PanelApp) PanelApp.sessionLost();
           setStatus('err', 'Error');
-          showMsg('El RCS respondió: ' + m, true);
+          showMsg('El RCS respondió algo inesperado' + (m ? ': ' + m : '') +
+                  '\n\nRespuesta (envíe captura de esto):\n' + t.slice(0, 600), true);
           return;
         }
-        lastData = parse(j);
+        lastData = parsed;
         render(lastData);
         var now = new Date();
         setStatus('ok', 'Actualizado ' + pad(now.getHours()) + ':' + pad(now.getMinutes()) + ':' + pad(now.getSeconds()));
@@ -178,7 +180,13 @@
 
   // {code, data:[{countT:[{data:[...], series, seriesValue}], legend:[...]}]}
   function parse(j){
-    var block = (j.data && j.data[0]) || {};
+    var d0 = j.data !== undefined ? j.data : (j.result !== undefined ? j.result : j);
+    if (typeof d0 === 'string') { try { d0 = JSON.parse(d0); } catch (e) {} }
+    var block = Array.isArray(d0) ? (d0[0] || {}) : (d0 || {});
+    if (!block.countT && block.data && (Array.isArray(block.data) ? block.data[0] : block.data)) {
+      var inner = Array.isArray(block.data) ? block.data[0] : block.data;
+      if (inner && inner.countT) block = inner;
+    }
     var legend = (block.legend || []).map(String);
     var series = (block.countT || []).map(function(s, i){
       var vals = (s.data || []).map(function(v){ var n = parseFloat(v); return isNaN(n) ? 0 : n; });
