@@ -2,6 +2,21 @@ package com.grandbay.paneloperario;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.app.DownloadManager;
+import android.content.Context;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.res.Configuration;
+import android.net.Uri;
+import android.os.Environment;
+import android.webkit.JsPromptResult;
+import android.webkit.JsResult;
+import android.webkit.URLUtil;
+import android.webkit.ValueCallback;
+import android.webkit.WebChromeClient;
+import android.widget.EditText;
+import android.widget.PopupMenu;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.os.Build;
@@ -70,6 +85,10 @@ public class MainActivity extends Activity {
     private TextView errorText;
 
     private String autoLoginFn;
+    private boolean desktopMode = true;
+    private SharedPreferences prefs;
+    private ValueCallback<Uri[]> fileCallback;
+    private static final int FILE_REQ = 7;
     private boolean mainFrameError = false;
 
     // Estado del inicio de sesión
@@ -103,12 +122,18 @@ public class MainActivity extends Activity {
         FrameLayout.LayoutParams full = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
 
+        prefs = getSharedPreferences("panel", MODE_PRIVATE);
+        desktopMode = prefs.getBoolean("desktop", true);
+
         web = new WebView(this);
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
         s.setDatabaseEnabled(true);
-        s.setUserAgentString(DESKTOP_UA);       // la página cree que es un computador
+        if (desktopMode) s.setUserAgentString(DESKTOP_UA);   // la página cree que es un computador
+        s.setJavaScriptCanOpenWindowsAutomatically(true);
+        s.setSupportMultipleWindows(false);     // window.open / target=_blank se abren aquí mismo
+        s.setAllowFileAccess(true);
         s.setUseWideViewPort(true);
         s.setLoadWithOverviewMode(true);        // ajusta el ancho de escritorio a la pantalla
         s.setSupportZoom(true);
@@ -119,7 +144,10 @@ public class MainActivity extends Activity {
         web.setBackgroundColor(Color.parseColor("#3D4049"));
         web.addJavascriptInterface(new Bridge(), "PanelApp");
         web.setWebViewClient(new MainClient());
+        web.setWebChromeClient(new Chrome());
+        web.setDownloadListener((url, ua, disp, mime, len) -> download(url, ua, disp, mime));
         root.addView(web, full);
+        root.addView(buildMenuButton());
 
         root.addView(buildOverlay(), full);
         root.addView(buildErrorView(), full);
@@ -157,6 +185,20 @@ public class MainActivity extends Activity {
         if (web.canGoBack()) web.goBack(); else super.onBackPressed();
     }
 
+    @Override public void onConfigurationChanged(Configuration c) {
+        super.onConfigurationChanged(c);
+        handler.postDelayed(() -> web.evaluateJavascript(desktopJs(), null), 300);
+    }
+
+    @Override protected void onActivityResult(int req, int res, Intent data) {
+        if (req == FILE_REQ && fileCallback != null) {
+            fileCallback.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(res, data));
+            fileCallback = null;
+            return;
+        }
+        super.onActivityResult(req, res, data);
+    }
+
     @Override public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
         if (hasFocus) hideSystemBars();
@@ -164,29 +206,36 @@ public class MainActivity extends Activity {
 
     // ---------------------------------------------------------------- modo escritorio + vigilante
 
-    /** Fuerza ancho de computador aunque la página pida "ancho del celular". */
-    private static final String DESKTOP_JS =
-        "(function(){try{var c='width=" + DESKTOP_WIDTH + "';" +
-        "var m=document.querySelector('meta[name=viewport]');" +
-        "if(!m){m=document.createElement('meta');m.name='viewport';(document.head||document.documentElement).appendChild(m);}" +
-        "if(m.content!==c)m.content=c;}catch(e){}})()";
+    /** Ancho de computador (1366) ajustado para que la página completa quepa en la pantalla. */
+    private String desktopJs() {
+        if (!desktopMode) return "void 0";
+        float density = getResources().getDisplayMetrics().density;
+        float cssW = (web.getWidth() > 0 ? web.getWidth() : getResources().getDisplayMetrics().widthPixels) / density;
+        float scale = Math.min(1f, cssW / DESKTOP_WIDTH);
+        String c = String.format(java.util.Locale.US,
+                "width=%d, initial-scale=%.4f, minimum-scale=%.4f, maximum-scale=4, user-scalable=yes",
+                DESKTOP_WIDTH, scale, scale);
+        return "(function(){try{var c='" + c + "';" +
+            "var ms=document.querySelectorAll('meta[name=viewport]');for(var i=1;i<ms.length;i++)ms[i].remove();" +
+            "var m=ms[0];if(!m){m=document.createElement('meta');m.name='viewport';(document.head||document.documentElement).appendChild(m);}" +
+            "if(m.content!==c)m.content=c;}catch(e){}})()";
+    }
 
     private static final String WATCHER_JS =
         "(function(){if(window.__panelWatch)return;window.__panelWatch=1;" +
-        "var EXP=/authorization\\s*ex\\s*pired|account or authorization|session (has )?(expired|timed? ?out)|not logged|please log ?in|\\u8fc7\\u671f|\\u91cd\\u65b0\\u767b\\u5f55|sesi[o\\u00f3]n (expir|venc|caduc)/i;" +
+        "var EXP=/account or authorization\\s*ex\\s*pired|authorization\\s*ex\\s*pired|session (has )?(expired|timed? ?out)|please log ?in again|\\u91cd\\u65b0\\u767b\\u5f55|sesi[o\\u00f3]n (expir|venc|caduc)/i;" +
         "var sent=0;" +
         "function chk(){try{var b=document.body;if(!b)return;" +
-        " var pw=document.querySelector('input[type=password]');" +
-        " var lost=(pw&&pw.offsetParent!==null)||EXP.test((b.innerText||'').replace(/\\s+/g,' '));" +
+        " var lost=EXP.test((b.innerText||'').replace(/\\s+/g,' '));" +
         " if(lost){var n=Date.now();if(n-sent>3000){sent=n;PanelApp.sessionLost();}}" +
         "}catch(e){}}" +
         "var t=null;" +
         "try{new MutationObserver(function(){if(t)return;t=setTimeout(function(){t=null;chk();},250);})" +
         ".observe(document.documentElement,{childList:true,subtree:true,characterData:true});}catch(e){}" +
-        "setInterval(chk,2000);chk();})()";
+        "setInterval(chk,3000);chk();})()";
 
     private void prepPage() {
-        web.evaluateJavascript(DESKTOP_JS, null);
+        web.evaluateJavascript(desktopJs(), null);
         web.evaluateJavascript(WATCHER_JS, null);
     }
 
@@ -307,7 +356,7 @@ public class MainActivity extends Activity {
         }
 
         @Override public void onPageCommitVisible(WebView v, String url) {
-            v.evaluateJavascript(DESKTOP_JS, null);   // antes de que se vea, para que no "salte"
+            v.evaluateJavascript(desktopJs(), null);   // antes de que se vea, para que no "salte"
         }
 
         @Override public void onPageFinished(WebView v, String url) {
@@ -333,6 +382,10 @@ public class MainActivity extends Activity {
 
         @Override public void doUpdateVisitedHistory(WebView v, String url, boolean isReload) {
             prepPage();
+            if (!loggingIn && !manualMode && url != null && web.getProgress() == 100
+                    && !url.contains(TARGET_KEY) && url.toLowerCase(java.util.Locale.US).contains("login")) {
+                startLogin();
+            }
         }
 
         @Override public void onReceivedHttpAuthRequest(WebView v, HttpAuthHandler h, String host, String realm) {
@@ -355,6 +408,116 @@ public class MainActivity extends Activity {
         }
 
         @Override public boolean shouldOverrideUrlLoading(WebView v, String url) { return false; }
+    }
+
+    // ---------------------------------------------------------------- confirmaciones, avisos, archivos
+
+    /** Sin esto, alert/confirm/prompt de la página se cancelan solos y los botones de acción "no hacen nada". */
+    private class Chrome extends WebChromeClient {
+        @Override public boolean onJsAlert(WebView v, String url, String msg, final JsResult r) {
+            new AlertDialog.Builder(MainActivity.this)
+                    .setMessage(msg)
+                    .setPositiveButton("OK", (d, w) -> r.confirm())
+                    .setOnCancelListener(d -> r.cancel())
+                    .show();
+            return true;
+        }
+
+        @Override public boolean onJsConfirm(WebView v, String url, String msg, final JsResult r) {
+            new AlertDialog.Builder(MainActivity.this)
+                    .setMessage(msg)
+                    .setPositiveButton("Aceptar", (d, w) -> r.confirm())
+                    .setNegativeButton("Cancelar", (d, w) -> r.cancel())
+                    .setOnCancelListener(d -> r.cancel())
+                    .show();
+            return true;
+        }
+
+        @Override public boolean onJsPrompt(WebView v, String url, String msg, String def, final JsPromptResult r) {
+            final EditText in = new EditText(MainActivity.this);
+            in.setText(def);
+            new AlertDialog.Builder(MainActivity.this)
+                    .setMessage(msg)
+                    .setView(in)
+                    .setPositiveButton("Aceptar", (d, w) -> r.confirm(in.getText().toString()))
+                    .setNegativeButton("Cancelar", (d, w) -> r.cancel())
+                    .setOnCancelListener(d -> r.cancel())
+                    .show();
+            return true;
+        }
+
+        @Override public boolean onJsBeforeUnload(WebView v, String url, String msg, JsResult r) {
+            r.confirm();
+            return true;
+        }
+
+        @Override public boolean onShowFileChooser(WebView v, ValueCallback<Uri[]> cb, FileChooserParams params) {
+            if (fileCallback != null) fileCallback.onReceiveValue(null);
+            fileCallback = cb;
+            try {
+                startActivityForResult(params.createIntent(), FILE_REQ);
+            } catch (Exception e) {
+                fileCallback = null;
+                return false;
+            }
+            return true;
+        }
+    }
+
+    private void download(String url, String ua, String disposition, String mime) {
+        try {
+            String name = URLUtil.guessFileName(url, disposition, mime);
+            DownloadManager.Request req = new DownloadManager.Request(Uri.parse(url));
+            req.addRequestHeader("Cookie", CookieManager.getInstance().getCookie(url));
+            req.addRequestHeader("User-Agent", ua);
+            req.setMimeType(mime);
+            req.setTitle(name);
+            req.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+            req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name);
+            ((DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE)).enqueue(req);
+            Toast.makeText(this, "Descargando " + name, Toast.LENGTH_SHORT).show();
+        } catch (Exception e) {
+            Toast.makeText(this, "No se pudo descargar: " + e.getMessage(), Toast.LENGTH_LONG).show();
+        }
+    }
+
+    // ---------------------------------------------------------------- menú (botón ⋮ pequeño)
+
+    private View buildMenuButton() {
+        TextView b = new TextView(this);
+        b.setText("\u22EE");
+        b.setTextSize(20);
+        b.setTextColor(Color.WHITE);
+        b.setGravity(Gravity.CENTER);
+        android.graphics.drawable.GradientDrawable bgd = new android.graphics.drawable.GradientDrawable();
+        bgd.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+        bgd.setColor(Color.parseColor("#99000000"));
+        b.setBackground(bgd);
+        b.setAlpha(0.45f);
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(dp(36), dp(36),
+                Gravity.BOTTOM | Gravity.START);
+        lp.setMargins(dp(6), 0, 0, dp(6));
+        b.setLayoutParams(lp);
+        b.setOnClickListener(v -> {
+            PopupMenu m = new PopupMenu(this, v);
+            m.getMenu().add(0, 1, 0, "Recargar panel");
+            m.getMenu().add(0, 2, 1, desktopMode ? "Ver en modo celular" : "Ver en modo escritorio");
+            m.getMenu().add(0, 3, 2, "Iniciar sesión de nuevo");
+            m.setOnMenuItemClickListener(it -> {
+                switch (it.getItemId()) {
+                    case 1: web.reload(); break;
+                    case 2:
+                        desktopMode = !desktopMode;
+                        prefs.edit().putBoolean("desktop", desktopMode).apply();
+                        recreate();
+                        break;
+                    case 3: manualMode = false; quickRepeats = 0; startLogin(); break;
+                }
+                return true;
+            });
+            m.show();
+        });
+        return b;
     }
 
     // ---------------------------------------------------------------- script de login
