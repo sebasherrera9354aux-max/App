@@ -224,13 +224,15 @@
       setStatus('load', 'Iniciando sesión de nuevo…');
       PanelApp.freshLogin();
     } else {
-      var ck = '', tr = '';
+      var ck = '', tr = '', hi = '';
       try { ck = PanelApp.cookieNames(); } catch (e) { ck = '?'; }
       try { tr = PanelApp.loginTrail(); } catch (e) { tr = '?'; }
+      try { hi = PanelApp.helperInfo(); } catch (e) { hi = '?'; }
       setStatus('err', 'Sin sesión');
       showMsg('El RCS no acepta la sesión para esta consulta (resultCode: redirect).\n\n' +
               'Datos de sesión: ' + ck + '\n\n' +
               'Recorrido del login: ' + tr + '\n\n' +
+              'Consulta: ' + hi + '\n\n' +
               'Toque el botón para entrar a mano con admin. Si después de entrar a mano ' +
               'carga la gráfica, el problema es solo el login automático.', true);
       var b = document.createElement('button');

@@ -97,6 +97,14 @@ public class MainActivity extends Activity {
     private static final int FILE_REQ = 7;
     private boolean mainFrameError = false;
 
+    // WebView oculto con el panel real: desde ahí salen las consultas de Estadísticas
+    private WebView helper;
+    private boolean helperReady = false;
+    private volatile String helperUrl = null;
+    private volatile String lastVia = "-";
+    private final java.util.ArrayList<String[]> helperQueue = new java.util.ArrayList<>();
+    private final java.util.Map<String, String> hdrs = new java.util.concurrent.ConcurrentHashMap<>();
+
     // Estado del inicio de sesión
     private boolean loggingIn = false;
     private boolean manualMode = false;
@@ -154,6 +162,17 @@ public class MainActivity extends Activity {
         web.setWebChromeClient(new Chrome());
         web.setDownloadListener((url, ua, disp, mime, len) -> download(url, ua, disp, mime));
         root.addView(web, full);
+
+        helper = new WebView(this);
+        WebSettings hs = helper.getSettings();
+        hs.setJavaScriptEnabled(true);
+        hs.setDomStorageEnabled(true);
+        hs.setUserAgentString(uaString);
+        helper.addJavascriptInterface(new Bridge(), "PanelApp");
+        helper.setWebViewClient(new HelperClient());
+        helper.setAlpha(0f);
+        root.addView(helper, new FrameLayout.LayoutParams(1, 1));   // invisible pero activo
+
         root.addView(buildMenuButton());
 
         root.addView(buildOverlay(), full);
@@ -184,6 +203,7 @@ public class MainActivity extends Activity {
 
     @Override protected void onDestroy() {
         handler.removeCallbacksAndMessages(null);
+        helper.destroy();
         web.destroy();
         super.onDestroy();
     }
@@ -245,6 +265,7 @@ public class MainActivity extends Activity {
     private void prepPage() {
         web.evaluateJavascript(desktopJs(), null);
         web.evaluateJavascript(WATCHER_JS, null);
+        web.evaluateJavascript(HOOK_JS, null);
     }
 
     private class Bridge {
@@ -310,53 +331,92 @@ public class MainActivity extends Activity {
             handler.post(() -> showPanel());
         }
 
-        /** Consulta POST al RCMS hecha por la app, con las cookies de la sesión del panel. */
+        /**
+         * Consulta POST al RCMS hecha desde dentro de la página real del panel (WebView oculto),
+         * con su jQuery/XHR: así salen las mismas cookies y cabeceras que usa el RCMS.
+         */
         @JavascriptInterface public void post(final String id, final String path, final String body) {
-            new Thread(() -> {
-                int code = 0;
-                String text;
-                try {
-                    if (path.contains("://") || path.contains("..")) throw new IOException("ruta no permitida");
-                    String url = STATS_BASE + path;
-                    java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
-                    c.setConnectTimeout(8000);
-                    c.setReadTimeout(15000);
-                    c.setInstanceFollowRedirects(false);
-                    c.setRequestMethod("POST");
-                    c.setDoOutput(true);
-                    String ck = CookieManager.getInstance().getCookie(url);
-                    if (ck != null) c.setRequestProperty("Cookie", ck);
-                    c.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8");
-                    c.setRequestProperty("Accept", "*/*");
-                    c.setRequestProperty("X-Requested-With", "XMLHttpRequest");
-                    c.setRequestProperty("Origin", "http://10.20.1.4:8181");
-                    c.setRequestProperty("Referer", TARGET_URL);
-                    if (uaString != null && !uaString.isEmpty()) c.setRequestProperty("User-Agent", uaString);
-                    byte[] out = body.getBytes("UTF-8");
-                    c.setFixedLengthStreamingMode(out.length);
-                    c.getOutputStream().write(out);
-                    code = c.getResponseCode();
-                    java.util.List<String> sc = c.getHeaderFields().get("Set-Cookie");
-                    if (sc != null) for (String v : sc) CookieManager.getInstance().setCookie(url, v);
-                    InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();
-                    ByteArrayOutputStream bo = new ByteArrayOutputStream();
-                    if (in != null) {
-                        byte[] buf = new byte[8192];
-                        int n;
-                        while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
-                        in.close();
-                    }
-                    text = bo.toString("UTF-8");
-                    if (code >= 300 && code < 400) text = "{\"resultCode\":\"redirect\",\"message\":\"HTTP " + code + "\"}";
-                    c.disconnect();
-                } catch (Exception e) {
-                    code = -1;
-                    text = String.valueOf(e.getMessage());
-                }
-                final String js = "window.__nativeResp && window.__nativeResp(" + JSONObject.quote(id) + ","
-                        + code + "," + JSONObject.quote(text) + ")";
-                handler.post(() -> web.evaluateJavascript(js, null));
-            }).start();
+            handler.post(() -> {
+                if (path.contains("://") || path.contains("..")) { reply(id, -1, "ruta no permitida"); return; }
+                String[] req = {id, STATS_BASE + path, body};
+                if (helperReady) runHelper(req); else helperQueue.add(req);
+            });
+        }
+
+        /** Respuesta del WebView oculto. */
+        @JavascriptInterface public void helperDone(String id, int code, String text, String via) {
+            lastVia = via;
+            handler.post(() -> reply(id, code, text));
+        }
+
+        /** Cabeceras propias que el RCMS pone en sus consultas (p. ej. un token). */
+        @JavascriptInterface public void hdr(String name, String value) {
+            if (name != null && value != null && name.length() < 64) hdrs.put(name, value);
+        }
+
+        @JavascriptInterface public String helperInfo() {
+            String u = helperUrl == null ? "(sin cargar)" : helperUrl.replace("http://10.20.1.4:8181", "");
+            String h = hdrs.isEmpty() ? "(ninguna)" : android.text.TextUtils.join(", ", hdrs.keySet());
+            return "página " + u + " · vía " + lastVia + " · cabeceras " + h;
+        }
+    }
+
+    // ---------------------------------------------------------------- consultas desde la página real
+
+    private static final String HOOK_JS =
+        "(function(){if(window.__hdrHook)return;window.__hdrHook=1;" +
+        "var S=/^(content-type|accept|x-requested-with|content-length)$/i;" +
+        "var o=XMLHttpRequest.prototype.setRequestHeader;" +
+        "XMLHttpRequest.prototype.setRequestHeader=function(k,v){" +
+        "try{if(!S.test(k))PanelApp.hdr(String(k),String(v));}catch(e){}return o.apply(this,arguments);};})()";
+
+    private static final String REQ_JS =
+        "function(id,url,body,h){" +
+        " function done(st,t,via){PanelApp.helperDone(id,st,String(t),via);}" +
+        " try{" +
+        "  var jq=window.jQuery;" +
+        "  if(jq&&jq.ajax){jq.ajax({url:url,type:'POST',data:body,dataType:'text',headers:h,cache:false," +
+        "   success:function(t,s,x){done(x.status,t,'jquery');}," +
+        "   error:function(x){done(x.status||-1,x.responseText||('error '+x.status),'jquery');}});return;}" +
+        "  var x=new XMLHttpRequest();x.open('POST',url,true);" +
+        "  x.setRequestHeader('Content-Type','application/x-www-form-urlencoded; charset=UTF-8');" +
+        "  x.setRequestHeader('X-Requested-With','XMLHttpRequest');" +
+        "  for(var k in h){try{x.setRequestHeader(k,h[k]);}catch(e){}}" +
+        "  x.onload=function(){done(x.status,x.responseText,'xhr');};" +
+        "  x.onerror=function(){done(-1,'error de red','xhr');};" +
+        "  x.send(body);" +
+        " }catch(e){done(-1,String(e),'error');}}";
+
+    private void runHelper(String[] req) {
+        String js = "(" + REQ_JS + ")(" + JSONObject.quote(req[0]) + "," + JSONObject.quote(req[1]) + ","
+                + JSONObject.quote(req[2]) + "," + new JSONObject(hdrs) + ")";
+        helper.evaluateJavascript(js, null);
+    }
+
+    private void reply(String id, int code, String text) {
+        String js = "window.__nativeResp && window.__nativeResp(" + JSONObject.quote(id) + ","
+                + code + "," + JSONObject.quote(text) + ")";
+        web.evaluateJavascript(js, null);
+    }
+
+    /** Carga (o recarga) el panel real en el WebView oculto, ya con la sesión actual. */
+    private void loadHelper() {
+        helperReady = false;
+        helper.loadUrl(TARGET_URL);
+    }
+
+    private class HelperClient extends WebViewClient {
+        @Override public void onPageFinished(WebView v, String url) {
+            helperUrl = url;
+            v.evaluateJavascript(HOOK_JS, null);
+            if (url == null || url.startsWith("about:")) return;
+            helperReady = true;
+            for (String[] r : helperQueue) runHelper(r);
+            helperQueue.clear();
+        }
+
+        @Override public void onReceivedHttpAuthRequest(WebView v, HttpAuthHandler h, String host, String realm) {
+            h.proceed(USER, PASS);
         }
     }
 
@@ -417,7 +477,9 @@ public class MainActivity extends Activity {
                 } else if (expired) {
                     web.evaluateJavascript(loginScript("'ok'"), null);
                 } else if (web.getProgress() == 100 && ++noFormStreak >= 3) {
-                    if (submits > 0 || (pageLoadedAt > 0 && now - pageLoadedAt > 3000)) {
+                    // Sin envío: esperar 8 s por si el formulario de login tarda en aparecer
+                    if (submits > 0 || (pageLoadedAt > 0 && now - pageLoadedAt > 8000)) {
+                        trail.add(submits > 0 ? "[sesión OK]" : "[sin formulario, se asume sesión]");
                         loginOk();
                         return;
                     }
@@ -429,6 +491,7 @@ public class MainActivity extends Activity {
 
     private void showStats() {
         statsShown = true;
+        loadHelper();
         String html;
         try (InputStream in = getAssets().open("estadisticas.html")) {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -534,6 +597,11 @@ public class MainActivity extends Activity {
         }
 
         @Override public void doUpdateVisitedHistory(WebView v, String url, boolean isReload) {
+            if ((loggingIn || manualMode) && url != null) {   // cambios de página sin recarga (#...)
+                String u = url.replace("http://10.20.1.4:8181", "");
+                if (trail.isEmpty() || !trail.get(trail.size() - 1).equals(u)) trail.add(u);
+                while (trail.size() > 12) trail.remove(0);
+            }
             if (statsShown && !loggingIn) return;
             prepPage();
             if (!loggingIn && !manualMode && url != null && web.getProgress() == 100
